@@ -6,12 +6,13 @@ plugins {
 
 android {
     namespace = "jp.co.abs.filedownloaderkamada3"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "jp.co.abs.filedownloaderkamada3"
         minSdk = 24
-        targetSdk = 35
+        //noinspection OldTargetApi
+        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
