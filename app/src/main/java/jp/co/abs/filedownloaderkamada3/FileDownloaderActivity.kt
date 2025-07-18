@@ -77,14 +77,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 
 
-//パス文字列
-//private val downloadPath = Environment.getExternalStorageDirectory().path + "/Kamada_Picture/"
-//val filePath: String = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
 private var fileName = ""
 private var notifySuccess = "ダウンロードが完了しました"
 private var notifyFailure = "画像取得に失敗しました"
 private var notifyImageAcquisition = "画像を取得しました"
-
+var imageUri: Uri = if (Build.VERSION.SDK_INT >= 29) {
+    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+} else {
+    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+}
 var selfPathFile : String = ""
 const val REQUEST_READ_MEDIA_IMAGES = 1
 
@@ -181,7 +182,7 @@ private fun String.isGrantedPermission(context: Context): Boolean {
 }
 
 @SuppressLint("SimpleDateFormat", "CoroutineCreationDuringComposition")
-fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, context: Context) {
+fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, context: Context, showDownloadImage: MutableState<Boolean>) {
     val stringUrl: String = urlEntered
     if (stringUrl.isEmpty()){
         Toast.makeText(context, notifyFailure, Toast.LENGTH_SHORT).show()
@@ -210,15 +211,9 @@ fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, con
             // 保存先のファイル作成
             fileName = "$current.png"
 
-            val collection = if (Build.VERSION.SDK_INT >= 29) {
-                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-            } else {
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            }
-            selfPathFile = collection.path?.let { File(it).toString() }.toString()
             val contentValues = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/*")
                 if (Build.VERSION.SDK_INT >= 29) {
                     put(MediaStore.Images.Media.IS_PENDING, true)
                 }
@@ -230,13 +225,14 @@ fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, con
             }
 
             val contentResolver = context.contentResolver
-            val contentUri = contentResolver.insert(collection, contentValues)
-
+            val contentUri = contentResolver.insert(imageUri, contentValues)
+            Log.d("File","$imageUri")
             //※2 ファイルを書き込む
             contentResolver.openFileDescriptor(contentUri!!, "w", null).use {
                 FileOutputStream(it!!.fileDescriptor).use { output ->
                     bmp.compress(Bitmap.CompressFormat.PNG, 100, output)
                 }
+                imageUri = contentUri
             }
 
             contentValues.clear()
@@ -252,6 +248,7 @@ fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, con
             withContext(Dispatchers.Main) {
                 // プログレスバーを非表示
                 showProgressBer.value = false
+                showDownloadImage.value = true
                 Toast.makeText(context, notifySuccess, Toast.LENGTH_SHORT).show()
             }
         } catch (e: IOException) {
@@ -273,35 +270,24 @@ fun FileDownloaderScreen(applicationContext:Context) {
     val focusRequester = remember { FocusRequester() }
     val interactionSource = remember { MutableInteractionSource() }
     var url by remember { mutableStateOf("") }
-    var imageBitmap = remember {
-        try {
-
-            val file = File(selfPathFile)
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-            bitmap?.asImageBitmap()
-        } catch (e: Exception) {
-            // エラー処理
-            e.printStackTrace()
-            null
+    val context = LocalContext.current
+    val showDownloadImage = remember { mutableStateOf(false) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            imageUri = uri
+            showDownloadImage.value = true
+        }
+        if (uri != null){
+            Toast.makeText(applicationContext, notifyImageAcquisition, Toast.LENGTH_SHORT).show()
         }
     }
-
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        selfPathFile = uri.toString()
-        Log.d("Uri","$uri")
-        Toast.makeText(applicationContext, notifyImageAcquisition, Toast.LENGTH_SHORT).show()
-    }
-
     val exitTheApplication = remember { mutableStateOf(false) }
-    val context = LocalContext.current
-
     val permission = Manifest.permission.READ_MEDIA_IMAGES
 
     when {
         openAlertDialog.value ->
             if (permission.isGrantedPermission(context)){
                 //パーミッションが許可されている
-                Toast.makeText(applicationContext, "権限が許可されています", Toast.LENGTH_SHORT).show()
             }else {
                 //パーミッションが不許可である
                 PermissionDialog(openAlertDialog,exitTheApplication)
@@ -312,7 +298,8 @@ fun FileDownloaderScreen(applicationContext:Context) {
         //明示的にアクティビティ終了
         (context as? Activity)?.finish()
     }
-
+    Log.d("testPATH",MediaStore.Images.ImageColumns.RELATIVE_PATH)
+    Log.d("testPATH",Environment.DIRECTORY_PICTURES)
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -363,7 +350,9 @@ fun FileDownloaderScreen(applicationContext:Context) {
                 )
                 Button(
                     modifier = Modifier.weight(0.7f),
-                    onClick = { downloadImage(urlEntered = url, showProgressBer = showProgressBer, context = applicationContext) },
+                    onClick = {
+                        downloadImage(urlEntered = url, showProgressBer = showProgressBer, context = applicationContext, showDownloadImage)
+                              },
                     shape = MaterialTheme.shapes.small
                 ) {
                     Text(text = "ダウンロード開始")
@@ -377,15 +366,24 @@ fun FileDownloaderScreen(applicationContext:Context) {
                         trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
                 }else {
-                    if (imageBitmap != null) {
+                    if (showDownloadImage.value) {
+                        val imageBitmap =
+                            try {
+                                val inputStream = context.contentResolver.openInputStream(imageUri)
+                                Log.d("File","$imageUri")
+                                val bitmap = BitmapFactory.decodeFile(inputStream.toString())
+                                bitmap?.asImageBitmap()
+                            } catch (e: Exception) {
+                                // エラー処理
+                                e.printStackTrace()
+                                null
+                            }
                         Image(bitmap = imageBitmap!!, contentDescription = "Internal Storage Image")
                     }else{
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
-                        ) {
-                            Text(text = "画像image")
-                        }
+                        ){ }
                     }
                 }
             }
@@ -393,8 +391,9 @@ fun FileDownloaderScreen(applicationContext:Context) {
                 Button(
                     modifier = Modifier.weight(1f),
                     onClick = {
-                        selfPathFile = ""
-                        imageBitmap = null },
+                        showDownloadImage.value = false
+                        url = ""
+                              },
                     shape = MaterialTheme.shapes.small
                 ) {
                     Text(text = "Clear")
@@ -405,7 +404,7 @@ fun FileDownloaderScreen(applicationContext:Context) {
                         //val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
                         //intent.type = "image/*"
                         //intent.addCategory(Intent.CATEGORY_OPENABLE)
-                        launcher.launch("image/*")
+                        launcher.launch("image/png")
 
                     },
                     shape = MaterialTheme.shapes.small
