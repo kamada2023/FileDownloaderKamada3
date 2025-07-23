@@ -1,12 +1,18 @@
 package jp.co.abs.filedownloaderkamada3
 
+import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.ContentValues
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -25,11 +31,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -49,15 +59,21 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusTarget
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat.checkSelfPermission
+import androidx.navigation.NavController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -67,20 +83,48 @@ import java.text.SimpleDateFormat
 import java.util.Date
 
 
-//パス文字列
-private val downloadPath = Environment.getExternalStorageDirectory().path + "/Kamada_Picture"
 private var fileName = ""
 private var notifySuccess = "ダウンロードが完了しました"
 private var notifyFailure = "画像取得に失敗しました"
-var selfPathFile : String = ""
+private var notifyImageAcquisition = "画像を取得しました"
+var imageUri: Uri = if (Build.VERSION.SDK_INT >= 29) {
+    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+} else {
+    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+}
+const val REQUEST_READ_MEDIA_IMAGES = 1
 
 class FileDownloaderActivity : ComponentActivity() {
+
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            FileDownloaderScreen(applicationContext)
+            FileDownloaderApp()
+            //FileDownloaderScreen()
+        }
+    }
+}
+
+enum class Nav {
+    FileDownloaderScreen,
+    TestScreen
+}
+@Composable
+fun FileDownloaderApp(){
+    val navController = rememberNavController()
+    NavHost(navController = navController, startDestination = Nav.FileDownloaderScreen.name) {
+        composable(route = Nav.FileDownloaderScreen.name) { FileDownloaderScreen(navController) }
+        composable(route = Nav.TestScreen.name) { TestScreen(navController) }
+    }
+}
+
+@Composable
+fun TestScreen(navController:NavController){
+    Box (modifier = Modifier.fillMaxSize()){
+        Button(onClick = { navController.navigate(Nav.FileDownloaderScreen.name) }) {
+            Text(text = "Test")
         }
     }
 }
@@ -88,9 +132,10 @@ class FileDownloaderActivity : ComponentActivity() {
 @SuppressLint("ContextCastToActivity")
 @Composable
 fun PermissionDialog(
-    downloadPathFile:File,
-    openAlertDialog: MutableState<Boolean>
+    openAlertDialog: MutableState<Boolean>,
+    exitTheApplication: MutableState<Boolean>
 ){
+    val context = LocalContext.current
     Dialog(onDismissRequest = { }) {
         Card(
             modifier = Modifier
@@ -111,9 +156,30 @@ fun PermissionDialog(
                     TextButton(
                         onClick = {
                             try {
-                                // 保存先のディレクトリが無ければ作成する
-                                downloadPathFile.mkdir()
-                                Log.d("Log", "new_File:$downloadPathFile")
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    // 外部ストレージの書き込み権限がアプリに対して既に付与されているかを確認
+                                    if (checkSelfPermission(context,Manifest.permission.READ_MEDIA_IMAGES)
+                                        != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        // 書き込み権限が付与されていない場合はリクエストを行う
+                                        ActivityCompat.requestPermissions(
+                                            context as Activity,
+                                            arrayOf(Manifest.permission.READ_MEDIA_IMAGES),
+                                            REQUEST_READ_MEDIA_IMAGES
+                                        )
+                                    }
+                                }
+//                                else {
+//
+//                                }
+
+                                //テストディレクトリ
+                                val collection = if (Build.VERSION.SDK_INT >= 29) {
+                                    MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                                } else {
+                                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                                }
+                                Log.d("MEDIA_Uri","$collection")
                                 openAlertDialog.value = false
                             } catch (error: SecurityException) {
                                 // ファイルに書き込み用のパーミッションが無い場合など
@@ -129,7 +195,8 @@ fun PermissionDialog(
                     TextButton(
                         onClick = {
                             openAlertDialog.value = false
-                            //exitTheApplication.value = true
+                            //アクティビティ終了
+                            exitTheApplication.value = true
                         }
                     ) { Text(text = "しない") }
                 }
@@ -138,8 +205,14 @@ fun PermissionDialog(
     }
 }
 
+private fun String.isGrantedPermission(context: Context): Boolean {
+    // checkSelfPermission は PERMISSION_GRANTED or PERMISSION_DENIED のどちらかを返す
+    // そのため checkSelfPermission の戻り値が PERMISSION_GRANTED であれば許可済みになる。
+    return context.checkSelfPermission(this) == PackageManager.PERMISSION_GRANTED
+}
+
 @SuppressLint("SimpleDateFormat", "CoroutineCreationDuringComposition")
-fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, context: Context) {
+fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, context: Context, showDownloadImage: MutableState<Boolean>) {
     val stringUrl: String = urlEntered
     if (stringUrl.isEmpty()){
         Toast.makeText(context, notifyFailure, Toast.LENGTH_SHORT).show()
@@ -163,28 +236,63 @@ fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, con
             val ism = urlCon.inputStream
             val bmp = BitmapFactory.decodeStream(ism)
 
-            val sdf = SimpleDateFormat("yyyyMMdd_HH:mm:ss")
+            val sdf = SimpleDateFormat("yyyyMMdd_HHmmss")
             val current = sdf.format(Date())
             // 保存先のファイル作成
-            fileName = "$current.png"
-            val file = File(downloadPath, fileName)
-            selfPathFile = file.toString()
-            Log.d("selfPathFile", selfPathFile)
-            // ファイルに書き込み
-            FileOutputStream(file).use { stream ->
-                bmp.compress(Bitmap.CompressFormat.PNG, 100, stream)
+            fileName = "$current.jpeg"
+
+            val uri: Uri = if (Build.VERSION.SDK_INT >= 29) {
+                MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+            } else {
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            }
+
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/*")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    put(MediaStore.Images.Media.IS_PENDING, true)
+                }
+                //※1　専用直下フォルダを作成したい場合
+                put(
+                    MediaStore.Images.ImageColumns.RELATIVE_PATH,
+                    Environment.DIRECTORY_PICTURES + "/Kamada_Picture/"
+                )
+            }
+
+            val contentResolver = context.contentResolver
+            val contentUri = contentResolver.insert(uri, contentValues)
+            Log.d("File","$uri")
+            //※2 ファイルを書き込む
+            contentResolver.openFileDescriptor(contentUri!!, "w", null).use {
+                FileOutputStream(it!!.fileDescriptor).use { output ->
+                    bmp.compress(Bitmap.CompressFormat.PNG, 100, output)
+                }
+                imageUri = contentUri
+            }
+
+            contentValues.clear()
+            if (Build.VERSION.SDK_INT >= 29) {
+                contentResolver.update(contentUri, contentValues.apply {
+                    put(MediaStore.Images.Media.IS_PENDING, false)
+                }, null, null)
+            } else {
+                contentResolver.update(contentUri, contentValues, null, null)
             }
 
             // 処理が終わったら、メインスレッドに切り替える。
             withContext(Dispatchers.Main) {
                 // プログレスバーを非表示
                 showProgressBer.value = false
+                showDownloadImage.value = true
                 Toast.makeText(context, notifySuccess, Toast.LENGTH_SHORT).show()
             }
         } catch (e: IOException) {
             e.printStackTrace()
+            Toast.makeText(context, notifyFailure, Toast.LENGTH_SHORT).show()
         } catch (e: MalformedURLException) {
             e.printStackTrace()
+            Toast.makeText(context, notifyFailure, Toast.LENGTH_SHORT).show()
         }
 
     }
@@ -193,50 +301,52 @@ fun downloadImage(urlEntered:String, showProgressBer: MutableState<Boolean>, con
 @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter", "Range")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FileDownloaderScreen(applicationContext:Context) {
-    val downloadPathFile = File(downloadPath)
+fun FileDownloaderScreen(navController: NavController) {
     val openAlertDialog = remember { mutableStateOf(true) }
     val showProgressBer = remember { mutableStateOf(false) }
     // 親コンポーネントにフォーカスを移動させるのに使う
     val focusRequester = remember { FocusRequester() }
     val interactionSource = remember { MutableInteractionSource() }
     var url by remember { mutableStateOf("") }
-    var imageBitmap = remember {
-        try {
-            val file = File(selfPathFile)
-            val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-            bitmap?.asImageBitmap()
-        } catch (e: Exception) {
-            // エラー処理
-            e.printStackTrace()
-            null
+    val context = LocalContext.current
+    val showDownloadImage = remember { mutableStateOf(false) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            imageUri = uri
+            showDownloadImage.value = true
+        }
+        if (uri != null) {
+            Toast.makeText(context, notifyImageAcquisition, Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, notifyFailure, Toast.LENGTH_SHORT).show()
         }
     }
-    var imageUri by remember { mutableStateOf<Uri?>(null) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        imageUri = uri
-        selfPathFile = uri.toString()
-    }
-//    val docLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-//        if (uri == null) return@rememberLauncherForActivityResult
-//        imageUri = uri
-//        selfPathFile = uri.toString()
+//    val testLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){ uri: Uri? ->
+//        if (uri != null) {
+//            imageUri = uri
+//            showDownloadImage.value = true
+//        }
+//        if (uri != null){
+//            Toast.makeText(context, notifyImageAcquisition, Toast.LENGTH_SHORT).show()
+//        }
 //    }
-//    val exitTheApplication = remember { mutableStateOf(false) }
-//    val context = LocalContext.current
-//    val navController = rememberNavController()
+    val exitTheApplication = remember { mutableStateOf(false) }
+    val permission = Manifest.permission.READ_MEDIA_IMAGES
 
     when {
         openAlertDialog.value ->
-            PermissionDialog(downloadPathFile,openAlertDialog)
+            if (permission.isGrantedPermission(context)){
+                //パーミッションが許可されている
+            }else {
+                //パーミッションが不許可である
+                PermissionDialog(openAlertDialog,exitTheApplication)
+            }
     }
 
-//    if(exitTheApplication.value){
-//        if (!navController.popBackStack()) {
-//            // 戻る画面がない場合は、明示的にアクティビティを終了
-//            (context as? Activity)?.finish()
-//        }
-//    }
+    if(exitTheApplication.value){
+        //明示的にアクティビティ終了
+        (context as? Activity)?.finish()
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -246,7 +356,18 @@ fun FileDownloaderScreen(applicationContext:Context) {
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.primary
                 ),
-                title = { Text("FileDownLoader 3.0") }
+                title = { Text("FileDownLoader 3.0") },
+                actions = {
+                    Button(
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            navController.navigate(Nav.TestScreen.name)
+                        },
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Text(text = "ダウンロードした画像")
+                    }
+                }
             )
         }
 
@@ -270,13 +391,13 @@ fun FileDownloaderScreen(applicationContext:Context) {
                     //intent.type = "image/*"
                     //ギャラリーへ遷移
                     launcher.launch("image/*")
-                    Toast.makeText(applicationContext, "画像を取得しました", Toast.LENGTH_SHORT).show()
                 },
                 modifier = Modifier.weight(0.8f),
                 shape = MaterialTheme.shapes.small
                 ) {
                 Text(text = "GALLERYから選択")
             }
+            Text(text = "URLを入力してください", modifier = Modifier.padding(10.dp))
             Row{
                 TextField(
                     modifier = Modifier
@@ -284,34 +405,49 @@ fun FileDownloaderScreen(applicationContext:Context) {
                         .weight(1f),
                     value = url,
                     onValueChange = { url = it },
-                    placeholder = { Text(text = "URLを入力してください") },
+                    placeholder = { Text(text = "http://") },
                     singleLine = false
                 )
                 Button(
                     modifier = Modifier.weight(0.7f),
-                    onClick = { downloadImage(urlEntered = url, showProgressBer = showProgressBer, context = applicationContext) },
+                    onClick = {
+                        downloadImage(urlEntered = url, showProgressBer = showProgressBer, context = context, showDownloadImage)
+                              },
                     shape = MaterialTheme.shapes.small
                 ) {
                     Text(text = "ダウンロード開始")
                 }
             }
-            Box(modifier = Modifier.weight(10f)){
+            Box(modifier = Modifier.weight(10f).fillMaxWidth()){
                 if (showProgressBer.value){
                     CircularProgressIndicator(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.align(Alignment.Center).width(64.dp),
                         color = MaterialTheme.colorScheme.secondary,
                         trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
                 }else {
-                    if (imageBitmap != null) {
-                        Image(bitmap = imageBitmap!!, contentDescription = "Internal Storage Image")
+                    if (showDownloadImage.value) {
+                        val imageBitmap =
+                            try {
+                                val inputStream = context.contentResolver.openInputStream(imageUri)
+                                Log.d("File","$imageUri")
+                                val bitmap = BitmapFactory.decodeStream(inputStream)
+                                bitmap?.asImageBitmap()
+                            } catch (e: Exception) {
+                                // エラー処理
+                                e.printStackTrace()
+                                null
+                            }
+                        Image(
+                            modifier = Modifier.fillMaxWidth(),
+                            bitmap = imageBitmap!!,
+                            contentDescription = "Internal Storage Image"
+                        )
                     }else{
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
-                        ) {
-                            Text(text = "画像image")
-                        }
+                        ){ }
                     }
                 }
             }
@@ -319,8 +455,9 @@ fun FileDownloaderScreen(applicationContext:Context) {
                 Button(
                     modifier = Modifier.weight(1f),
                     onClick = {
-                        selfPathFile = ""
-                        imageBitmap = null },
+                        showDownloadImage.value = false
+                        url = ""
+                              },
                     shape = MaterialTheme.shapes.small
                 ) {
                     Text(text = "Clear")
@@ -331,8 +468,8 @@ fun FileDownloaderScreen(applicationContext:Context) {
                         //val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
                         //intent.type = "image/*"
                         //intent.addCategory(Intent.CATEGORY_OPENABLE)
-                        launcher.launch("image/*")
-                        Toast.makeText(applicationContext, "画像を取得しました", Toast.LENGTH_SHORT).show()
+                        //testLauncher.launch(arrayOf("image/*"))
+                        navController.navigate(Nav.TestScreen.name)
                     },
                     shape = MaterialTheme.shapes.small
                 ) {
@@ -343,9 +480,9 @@ fun FileDownloaderScreen(applicationContext:Context) {
     }
 }
 
-@Preview(showBackground = true)
+@Preview(showBackground = true, showSystemUi = false)
 @Composable
 fun GreetingPreview() {
     //PermissionDialog()
-    //FileDownloaderScreen()
+    FileDownloaderApp()
 }
